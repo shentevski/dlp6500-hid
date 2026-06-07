@@ -37,6 +37,9 @@ PRODUCT_ID = 0xC900
 REPORT_ID = 0x00          # device uses unnumbered reports
 REPORT_SIZE = 64          # 64-byte reports in each direction
 READ_TIMEOUT_MS = 2000
+# Small positive timeout for draining the input buffer. NOT 0: on the Windows
+# hidapi build a 0 timeout blocks forever instead of polling non-blockingly.
+FLUSH_TIMEOUT_MS = 10
 
 HARDWARE_CODES = {
     0x00: "unknown", 0x01: "DLP6500", 0x02: "DLP9000",
@@ -199,7 +202,7 @@ class DMD:
         """
         for _ in range(128):
             try:
-                if not self.device.read(REPORT_SIZE, 0):
+                if not self.device.read(REPORT_SIZE, FLUSH_TIMEOUT_MS):
                     break
             except (OSError, IOError):
                 break
