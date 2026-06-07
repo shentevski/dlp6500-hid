@@ -148,8 +148,9 @@ class DMD:
         self.read_delay = 0.05      # seconds to wait after writing, before reading
         self.read_retries = 6       # how many times to re-issue a read that comes back empty
 
-        # Cache of images for the fast load_patterns / display_pattern workflow.
-        self._patterns: list[Image.Image] = []
+        # Cache for the fast load_patterns / display_pattern workflow: a list
+        # of pre-encoded patterns, each a list of (controller, encoded_bytes).
+        self._patterns: list = []
         self._pattern_dual = False
 
         # Confirm the link actually works.
@@ -562,6 +563,49 @@ class DMD:
             raise ValueError(f"{controller} is not a valid controller (0 or 1)")
         self.send_command('w', 0, command, payload)
 
+    def _encode_image(self, image: Image.Image, dual_controller: bool = False):
+        """
+        ERLE-encode an image into a list of (controller, encoded_bytes) tasks.
+        Encoding is the slow (~100 ms) Python step; cache the result to make
+        re-uploads fast. For dual controllers the image is split left/right.
+        """
+        if dual_controller:
+            width, height = image.size
+            half = width // 2
+            return [(0, enhanced_rle_encode(image.crop((0, 0, half, height)))),
+                    (1, enhanced_rle_encode(image.crop((half, 0, width, height))))]
+        return [(0, enhanced_rle_encode(image))]
+
+    def _send_encoded(self, image_index: int, encoded, controller: int = 0,
+                      progress: bool = False):
+        """Chunk an already-ERLE-encoded image and stream it to the controller."""
+        max_payload_size = 504
+        first_payload_size = 504
+        data = list(encoded)
+        nr_of_bytes = len(data)
+
+        remainder = nr_of_bytes - first_payload_size
+        nloops = 1 if remainder < 0 else math.ceil(remainder / max_payload_size) + 1
+
+        chunks = []
+        for i in range(nloops):
+            if i == 0:
+                start, end = 0, first_payload_size
+            elif i == nloops - 1:
+                start = (i - 1) * max_payload_size + first_payload_size
+                chunks.append(data[start:])
+                continue
+            else:
+                start = (i - 1) * max_payload_size + first_payload_size
+                end = start + max_payload_size
+            chunks.append(data[start:end])
+
+        self.initialize_pattern_bmp_load(image_index, nr_of_bytes, controller=controller)
+        for i, chunk in enumerate(chunks):
+            self.pattern_bmp_load(chunk, controller=controller)
+            if progress:
+                print(f"Controller {controller}: uploaded chunk {i + 1}/{len(chunks)}")
+
     def upload_image(self, image_index: int, image: Image.Image,
                      dual_controller: bool = False, progress: bool = True):
         """
@@ -570,44 +614,9 @@ class DMD:
         image_index : 0-17. Fill from high to low (upload 17 before 16 ...).
         dual_controller : split the image across two controllers (e.g. DLP9000).
         """
-        max_payload_size = 504
-        first_payload_size = 504
-
-        tasks = []
-        if dual_controller:
-            width, height = image.size
-            half = width // 2
-            tasks.append((0, image.crop((0, 0, half, height))))
-            tasks.append((1, image.crop((half, 0, width, height))))
-        else:
-            tasks.append((0, image))
-
-        for controller, img_half in tasks:
-            encoded = enhanced_rle_encode(img_half)
-            data = list(encoded)
-            nr_of_bytes = len(data)
-
-            remainder = nr_of_bytes - first_payload_size
-            nloops = 1 if remainder < 0 else math.ceil(remainder / max_payload_size) + 1
-
-            chunks = []
-            for i in range(nloops):
-                if i == 0:
-                    start, end = 0, first_payload_size
-                elif i == nloops - 1:
-                    start = (i - 1) * max_payload_size + first_payload_size
-                    chunks.append(data[start:])
-                    continue
-                else:
-                    start = (i - 1) * max_payload_size + first_payload_size
-                    end = start + max_payload_size
-                chunks.append(data[start:end])
-
-            self.initialize_pattern_bmp_load(image_index, nr_of_bytes, controller=controller)
-            for i, chunk in enumerate(chunks):
-                self.pattern_bmp_load(chunk, controller=controller)
-                if progress:
-                    print(f"Controller {controller}: uploaded chunk {i + 1}/{len(chunks)}")
+        for controller, encoded in self._encode_image(image, dual_controller):
+            self._send_encoded(image_index, encoded, controller=controller,
+                               progress=progress)
 
     # ----------------------------------------------------------------------- #
     # High-level convenience: show one image in pattern-on-the-fly mode.
@@ -666,19 +675,22 @@ class DMD:
 
     def load_patterns(self, images, dual_controller: bool = False) -> int:
         """
-        Prepare a set of images for fast display: enter OTF mode once and cache
-        the image list, so that display_pattern(i) shows ``images[i]``.
+        Prepare a set of images for fast display: ERLE-encode each one now
+        (the slow ~100 ms/image step), cache the compressed bytes, and enter
+        OTF mode once. display_pattern(i) then only streams the cached bytes.
 
         Note: the DLPC900 doesn't reliably hold multiple OTF images for pure
-        index-switching, so display_pattern re-streams the selected image each
-        time. That re-stream is only ~0.1-0.2 s; the win is that switching no
-        longer pays the ~0.5 s OTF mode-change that show_image_otf repeats.
+        index-switching, so display_pattern re-streams the selected image. With
+        encoding cached, a switch is just the USB transfer (~0.1-0.2 s) and skips
+        the ~0.5 s OTF mode-change that show_image_otf repeats.
 
         Returns the number of patterns cached. Up to 18.
         """
-        self._patterns = list(images)
-        if len(self._patterns) > 18:
+        images = list(images)
+        if len(images) > 18:
             raise ValueError("At most 18 patterns supported.")
+        # Pre-encode now; store list of (controller, encoded_bytes) tasks.
+        self._patterns = [self._encode_image(img, dual_controller) for img in images]
         self._pattern_dual = dual_controller
         self.enter_otf_mode()
         return len(self._patterns)
@@ -686,8 +698,9 @@ class DMD:
     def display_pattern(self, index: int, exposure_us: int = 1_000_000,
                         dark_us: int = 0, bitdepth: int = 8, color: int = 7):
         """
-        Display cached pattern ``index`` (from load_patterns). Re-streams the
-        image and shows it, but does NOT re-enter OTF mode, so it's fast.
+        Display cached pattern ``index`` (from load_patterns). Streams the
+        pre-encoded image and shows it, but does NOT re-encode or re-enter OTF
+        mode, so it's fast.
         """
         if not self._patterns:
             raise DMDError("No patterns loaded; call load_patterns([...]) first.")
@@ -699,8 +712,8 @@ class DMD:
             pattern_index=0, exposuretime=exposure_us, darktime=dark_us,
             bitdepth=bitdepth, color=color, image_pattern_index=0)
         self.configure_pattern_from_LUT(nr_of_LUT_entries=1, nr_of_patterns_to_display=0)
-        self.upload_image(0, self._patterns[index],
-                          dual_controller=self._pattern_dual, progress=False)
+        for controller, encoded in self._patterns[index]:
+            self._send_encoded(0, encoded, controller=controller)
         self.start_pattern()
 
 
