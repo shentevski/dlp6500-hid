@@ -1,0 +1,6 @@
+# Transport: the `hid` package (cython-hidapi). Ships prebuilt Windows wheels,
+# talks through the OS HID driver -> no Zadig / libusb driver swap needed.
+hidapi>=0.14
+# Image handling and pattern generation.
+pillow>=10.0
+numpy>=1.24
