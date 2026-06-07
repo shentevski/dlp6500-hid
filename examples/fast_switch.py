@@ -20,10 +20,12 @@ with DMD() as dmd:
     print("connected:", dmd.get_hardware())
 
     # --- one-time setup (the slow part) ---
-    dmd.enter_otf_mode()                       # switch to OTF once (~0.5 s)
-    # upload HIGHEST index first:
-    dmd.upload_pattern(1, patterns.circle(W, H, radius=270))
-    dmd.upload_pattern(0, patterns.solid(W, H, 255))
+    # load_patterns enters OTF mode and uploads the list into slots 0,1,...
+    # (handling the required descending upload order for you).
+    dmd.load_patterns([
+        patterns.solid(W, H, 255),             # slot 0
+        patterns.circle(W, H, radius=270),     # slot 1
+    ])
     print("patterns uploaded.")
 
     # --- fast toggling (each switch is ~instant) ---

@@ -660,6 +660,27 @@ class DMD:
         self.upload_image(index, image, dual_controller=dual_controller,
                           progress=progress)
 
+    def load_patterns(self, images, dual_controller: bool = False,
+                      progress: bool = True) -> int:
+        """
+        Enter OTF mode and bulk-load a list of images into pattern RAM, so that
+        ``images[i]`` lives in slot ``i``. Handles the controller's required
+        descending upload order for you. Returns the number of patterns loaded.
+
+        These live in volatile RAM (lost on power-cycle/reset), so call this once
+        per session; afterwards display_pattern(i) switches between them instantly.
+        Up to 18 patterns (slots 0-17).
+        """
+        images = list(images)
+        if len(images) > 18:
+            raise ValueError("At most 18 patterns (slots 0-17) fit in RAM.")
+        self.enter_otf_mode()
+        for i in reversed(range(len(images))):   # highest index first
+            if progress:
+                print(f"loading pattern {i + 1}/{len(images)} (slot {i}) ...")
+            self.upload_pattern(i, images[i], dual_controller=dual_controller)
+        return len(images)
+
     def display_pattern(self, index: int, exposure_us: int = 1_000_000,
                         dark_us: int = 0, bitdepth: int = 8, color: int = 7):
         """
