@@ -140,6 +140,11 @@ class DMD:
         self.display_modes = {'video': 0, 'pattern': 1, 'video-pattern': 2, 'otf': 3}
         self.display_modes_inv = {v: k for k, v in self.display_modes.items()}
 
+        # Read tuning: the DLPC900 occasionally returns an empty reply if read
+        # too soon, so we wait then retry the query a few times.
+        self.read_delay = 0.05      # seconds to wait after writing, before reading
+        self.read_retries = 6       # how many times to re-issue a read that comes back empty
+
         # Confirm the link actually works.
         try:
             self.hardware = self.get_hardware()[0]
@@ -182,6 +187,47 @@ class DMD:
         data = self.device.read(REPORT_SIZE, READ_TIMEOUT_MS)
         return list(data)
 
+    def _build_reports(self, mode: str, sequence_byte: int, command: int,
+                       payload: list[int]) -> list[list[int]]:
+        """Build the list of 64-byte reports for one command."""
+        buffer: list[int] = []
+
+        # Flag byte: 0xC0 for read, 0x40 for write.
+        flag_string = ('1' if mode == 'r' else '0') + '1000000'
+        buffer.append(bits_to_bytes(flag_string)[0])
+
+        # Sequence byte.
+        buffer.append(sequence_byte)
+
+        # Length (payload + 2 command bytes), little-endian.
+        temp = bits_to_bytes(number_to_bits(len(payload) + 2, 16))
+        buffer.append(temp[0])
+        buffer.append(temp[1])
+
+        # Command bytes, little-endian.
+        buffer.append(command & 0xFF)
+        buffer.append((command >> 8) & 0xFF)
+
+        reports: list[list[int]] = []
+        if len(buffer) + len(payload) < (REPORT_SIZE + 1):
+            buffer.extend(payload)
+            buffer.extend([0x00] * (REPORT_SIZE - len(buffer)))
+            reports.append(buffer)
+        else:
+            # First report carries the 6-byte header + up to 58 payload bytes,
+            # the rest are sent as full 64-byte reports.
+            remaining = list(payload)
+            buffer.extend(remaining[:58])
+            reports.append(buffer)
+            remaining = remaining[58:]
+            while remaining:
+                chunk = remaining[:REPORT_SIZE]
+                remaining = remaining[REPORT_SIZE:]
+                if len(chunk) < REPORT_SIZE:
+                    chunk.extend([0x00] * (REPORT_SIZE - len(chunk)))
+                reports.append(chunk)
+        return reports
+
     def send_command(self, mode: str, sequence_byte: int, command: int,
                      payload: list[int] | None = None):
         """
@@ -201,56 +247,32 @@ class DMD:
         if payload is None:
             payload = []
 
-        buffer: list[int] = []
+        reports = self._build_reports(mode, sequence_byte, command, payload)
 
-        # Flag byte: 0xC0 for read, 0x40 for write.
-        flag_string = ('1' if mode == 'r' else '0') + '1000000'
-        buffer.append(bits_to_bytes(flag_string)[0])
+        if mode != 'r':
+            for report in reports:
+                self._write_report(report)
+            return None
 
-        # Sequence byte.
-        buffer.append(sequence_byte)
-
-        # Length (payload + 2 command bytes), little-endian.
-        temp = bits_to_bytes(number_to_bits(len(payload) + 2, 16))
-        buffer.append(temp[0])
-        buffer.append(temp[1])
-
-        # Command bytes, little-endian.
-        buffer.append(command & 0xFF)
-        buffer.append((command >> 8) & 0xFF)
-
-        if len(buffer) + len(payload) < (REPORT_SIZE + 1):
-            buffer.extend(payload)
-            buffer.extend([0x00] * (REPORT_SIZE - len(buffer)))
-            self._write_report(buffer)
-        else:
-            # First report carries the 6-byte header + up to 58 payload bytes,
-            # the rest are sent as full 64-byte reports.
-            remaining = list(payload)
-            buffer.extend(remaining[:58])
-            self._write_report(buffer)
-            remaining = remaining[58:]
-            while remaining:
-                chunk = remaining[:REPORT_SIZE]
-                remaining = remaining[REPORT_SIZE:]
-                if len(chunk) < REPORT_SIZE:
-                    chunk.extend([0x00] * (REPORT_SIZE - len(chunk)))
-                self._write_report(chunk)
-
-        if mode == 'r':
-            time.sleep(0.02)
+        # Read mode: the DLPC900 sometimes returns an empty reply if polled too
+        # soon, so re-issue the (idempotent) query until we get data back.
+        answer = None
+        for attempt in range(self.read_retries):
+            for report in reports:
+                self._write_report(report)
+            time.sleep(self.read_delay)
             answer = parse_reply(self._read_report())
-            if answer is None:
-                raise DMDError("No reply received from DMD for a read command.")
-            # answer[0] is the error flag (reply flag-byte bit 5, 0x20). Warn only
-            # when it is actually SET. (Upstream had this condition inverted, so it
-            # cried "error flag set!" on every normal, error-free reply.)
-            if answer[0]:
-                warnings.warn(
-                    "DMD reply has its error flag (0x20) set for command "
-                    f"{command:#06x}.")
-            return answer
-        return None
+            if answer is not None and answer[3] > 0:   # answer[3] == data length
+                # answer[0] is the error flag (reply flag-byte bit 5, 0x20).
+                if answer[0]:
+                    warnings.warn(
+                        "DMD reply has its error flag (0x20) set for command "
+                        f"{command:#06x}.")
+                return answer
+
+        raise DMDError(
+            f"No valid reply from DMD for command {command:#06x} after "
+            f"{self.read_retries} attempts (got empty replies).")
 
     # ----------------------------------------------------------------------- #
     # Status / identity (user guide section 2.1)
@@ -380,17 +402,17 @@ class DMD:
                 "mode with a locked source first.")
         self.send_command('w', 0x00, 0x1A1B, [self.display_modes[mode]])
         time.sleep(0.5)
-        try:
-            new_mode = self.get_display_mode()
-        except IndexError:
-            new_mode = self.get_display_mode()
+        new_mode = self.get_display_mode()
         if new_mode != mode:
             raise DMDError(f"Mode activation failed (asked '{mode}', got '{new_mode}').")
 
     def get_display_mode(self) -> str:
         """Return the current display mode name."""
         ans = self.send_command('r', 0x00, 0x1A1B)
-        self.current_mode = self.display_modes_inv[ans[-1][0]]
+        value = ans[-1][0]
+        if value not in self.display_modes_inv:
+            raise DMDError(f"DMD reported unknown display-mode value {value}.")
+        self.current_mode = self.display_modes_inv[value]
         return self.current_mode
 
     def get_display_resolution(self) -> tuple[int, ...]:
