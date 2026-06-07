@@ -610,7 +610,7 @@ class DMD:
     # ----------------------------------------------------------------------- #
     def show_image_otf(self, image: Image.Image, exposure_us: int = 1_000_000,
                        dark_us: int = 0, bitdepth: int = 8, color: int = 7,
-                       dual_controller: bool | None = None):
+                       dual_controller: bool = False):
         """
         Display a single image in on-the-fly mode (looped indefinitely).
 
@@ -620,14 +620,11 @@ class DMD:
         microseconds. (Mirrors the proven Pycrafter6500 order; notably it does
         NOT set the input source to flash, which would show the flash patterns.)
 
-        If ``dual_controller`` is None it is auto-detected from hardware status.
+        ``dual_controller`` defaults to False (correct for a single-DLPC900 board
+        like the DLP6500 / DLPLCR900EVM, where the whole image goes to one
+        controller). Set it True only on a dual-DLPC900 board (e.g. DLP9000),
+        where the image is split into left/right halves across both controllers.
         """
-        if dual_controller is None:
-            try:
-                dual_controller = self.is_dual_controller()
-            except Exception:
-                dual_controller = False
-
         self.stop_pattern()
         self.set_display_mode("otf")
         self.setup_pattern_LUT_definition(
