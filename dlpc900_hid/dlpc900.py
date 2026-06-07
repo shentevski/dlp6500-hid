@@ -634,6 +634,48 @@ class DMD:
         self.upload_image(0, image, dual_controller=dual_controller)
         self.start_pattern()
 
+    # ----------------------------------------------------------------------- #
+    # Fast workflow: upload patterns once, then switch between them instantly.
+    # ----------------------------------------------------------------------- #
+    def enter_otf_mode(self):
+        """
+        Stop any running sequence and switch into pattern-on-the-fly mode.
+
+        Call this once (it includes the ~0.5 s mode-change settle). After this,
+        use upload_pattern() to load images and display_pattern() to switch
+        between them quickly.
+        """
+        self.stop_pattern()
+        self.set_display_mode("otf")
+
+    def upload_pattern(self, index: int, image: Image.Image,
+                       dual_controller: bool = False, progress: bool = False):
+        """
+        Upload one image into pattern-memory slot ``index`` (0-17) WITHOUT
+        displaying it. This is the slow part (USB transfer), so do it up front.
+
+        If you upload several, upload the HIGHEST index first (the controller
+        requires descending order), e.g. upload index 1 before index 0.
+        """
+        self.upload_image(index, image, dual_controller=dual_controller,
+                          progress=progress)
+
+    def display_pattern(self, index: int, exposure_us: int = 1_000_000,
+                        dark_us: int = 0, bitdepth: int = 8, color: int = 7):
+        """
+        Display an already-uploaded pattern by its memory ``index`` -- fast,
+        because it only re-points the 1-entry LUT and restarts; it does NOT
+        re-upload the image or re-enter OTF mode.
+
+        Requires enter_otf_mode() + upload_pattern(index, ...) to have run first.
+        """
+        self.stop_pattern()
+        self.setup_pattern_LUT_definition(
+            pattern_index=0, exposuretime=exposure_us, darktime=dark_us,
+            bitdepth=bitdepth, color=color, image_pattern_index=index)
+        self.configure_pattern_from_LUT(nr_of_LUT_entries=1, nr_of_patterns_to_display=0)
+        self.start_pattern()
+
 
 # Lowercase alias matching the upstream `dlpyc900.dmd` name.
 dmd = DMD
