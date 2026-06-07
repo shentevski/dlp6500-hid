@@ -468,8 +468,12 @@ class DMD:
         Pattern Display LUT Control (0x1A31). Display nr_of_LUT_entries entries;
         nr_of_patterns_to_display = 0 means loop forever.
         """
-        payload = bits_to_bytes(number_to_bits(nr_of_LUT_entries, 10)) + \
-            bits_to_bytes(number_to_bits(nr_of_patterns_to_display, 32))
+        # 2-byte LE entry count + 4-byte LE repeat count.
+        payload = [nr_of_LUT_entries & 0xFF, (nr_of_LUT_entries >> 8) & 0xFF,
+                   nr_of_patterns_to_display & 0xFF,
+                   (nr_of_patterns_to_display >> 8) & 0xFF,
+                   (nr_of_patterns_to_display >> 16) & 0xFF,
+                   (nr_of_patterns_to_display >> 24) & 0xFF]
         self.send_command('w', 1, 0x1A31, payload)
 
     def setup_pattern_LUT_definition(self, pattern_index: int = 0,
@@ -527,10 +531,10 @@ class DMD:
     def initialize_pattern_bmp_load(self, image_index: int, n_bytes: int,
                                     controller: int = 0):
         """Begin a BMP upload: declare image index and total byte count."""
-        byte0 = bits_to_bytes(number_to_bits(image_index, 4))
-        byte1 = [0]
-        byte_rest = bits_to_bytes(number_to_bits(n_bytes, 31))
-        payload = byte0 + byte1 + byte_rest
+        # 2-byte LE image index + 4-byte LE total size (incl. 48-byte header).
+        payload = [image_index & 0xFF, (image_index >> 8) & 0xFF,
+                   n_bytes & 0xFF, (n_bytes >> 8) & 0xFF,
+                   (n_bytes >> 16) & 0xFF, (n_bytes >> 24) & 0xFF]
         command = {0: 0x1A2A, 1: 0x1A2C}.get(controller)
         if command is None:
             raise ValueError(f"{controller} is not a valid controller (0 or 1)")
@@ -541,7 +545,8 @@ class DMD:
         nr = len(encoded_chunk)
         if nr > 510:
             raise DMDError("Chunk too big; use <=504 byte chunks.")
-        payload = bits_to_bytes(number_to_bits(nr, 10)) + list(encoded_chunk)
+        # 2-byte LE chunk length, then the chunk data.
+        payload = [nr & 0xFF, (nr >> 8) & 0xFF] + list(encoded_chunk)
         # Data-load opcodes: 0x1A2B (primary) / 0x1A2D (secondary). These differ
         # from the *init* opcodes (0x1A2A / 0x1A2C). The upstream library wrongly
         # reused 0x1A2A for the primary data load, so the pixels never stored.
