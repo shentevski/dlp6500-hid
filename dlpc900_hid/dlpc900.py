@@ -183,9 +183,26 @@ class DMD:
             self.device.write(report)
 
     def _read_report(self) -> list[int]:
-        """Read one report from the device."""
+        """Read one report from the device (blocking up to READ_TIMEOUT_MS)."""
         data = self.device.read(REPORT_SIZE, READ_TIMEOUT_MS)
         return list(data)
+
+    def _flush_input(self):
+        """
+        Drain any buffered input reports.
+
+        The DLPC900 sets the 'reply' bit on every command (including writes),
+        so each write leaves an unread ack in the OS HID input ring buffer.
+        Over pyusb those get dropped, but the Windows HID driver buffers them,
+        which otherwise makes the next read return a stale reply. Flush them
+        with non-blocking (timeout 0) reads before issuing a fresh query.
+        """
+        for _ in range(128):
+            try:
+                if not self.device.read(REPORT_SIZE, 0):
+                    break
+            except (OSError, IOError):
+                break
 
     def _build_reports(self, mode: str, sequence_byte: int, command: int,
                        payload: list[int]) -> list[list[int]]:
@@ -254,17 +271,19 @@ class DMD:
                 self._write_report(report)
             return None
 
-        # Read mode: the DLPC900 sometimes returns an empty reply if polled too
-        # soon, so re-issue the (idempotent) query until we get data back.
+        # Read mode: flush stale write-acks, issue the query, and accept only a
+        # non-empty reply whose echoed sequence byte matches. Retry otherwise.
         answer = None
         for attempt in range(self.read_retries):
+            self._flush_input()
             for report in reports:
                 self._write_report(report)
             time.sleep(self.read_delay)
             answer = parse_reply(self._read_report())
-            if answer is not None and answer[3] > 0:   # answer[3] == data length
-                # answer[0] is the error flag (reply flag-byte bit 5, 0x20).
-                if answer[0]:
+            # answer = (error_flag, flag_byte, sequence_byte, length, data)
+            if (answer is not None and answer[3] > 0
+                    and answer[2] == sequence_byte):
+                if answer[0]:   # error flag (reply flag-byte bit 5, 0x20)
                     warnings.warn(
                         "DMD reply has its error flag (0x20) set for command "
                         f"{command:#06x}.")
@@ -272,7 +291,7 @@ class DMD:
 
         raise DMDError(
             f"No valid reply from DMD for command {command:#06x} after "
-            f"{self.read_retries} attempts (got empty replies).")
+            f"{self.read_retries} attempts (empty or mismatched replies).")
 
     # ----------------------------------------------------------------------- #
     # Status / identity (user guide section 2.1)
