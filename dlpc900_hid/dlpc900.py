@@ -542,7 +542,10 @@ class DMD:
         if nr > 510:
             raise DMDError("Chunk too big; use <=504 byte chunks.")
         payload = bits_to_bytes(number_to_bits(nr, 10)) + list(encoded_chunk)
-        command = {0: 0x1A2A, 1: 0x1A2D}.get(controller)
+        # Data-load opcodes: 0x1A2B (primary) / 0x1A2D (secondary). These differ
+        # from the *init* opcodes (0x1A2A / 0x1A2C). The upstream library wrongly
+        # reused 0x1A2A for the primary data load, so the pixels never stored.
+        command = {0: 0x1A2B, 1: 0x1A2D}.get(controller)
         if command is None:
             raise ValueError(f"{controller} is not a valid controller (0 or 1)")
         self.send_command('w', 0, command, payload)
@@ -604,8 +607,10 @@ class DMD:
         Display a single image in on-the-fly mode (looped indefinitely).
 
         This is a one-call wrapper around the full OTF sequence:
-        stop -> set OTF mode -> define a 1-entry LUT -> upload the image ->
-        start. ``exposure_us`` is the on-time per cycle in microseconds.
+        stop -> set OTF mode -> define a 1-entry LUT -> configure LUT ->
+        upload the image -> start. ``exposure_us`` is the on-time per cycle in
+        microseconds. (Mirrors the proven Pycrafter6500 order; notably it does
+        NOT set the input source to flash, which would show the flash patterns.)
 
         If ``dual_controller`` is None it is auto-detected from hardware status.
         """
@@ -616,7 +621,6 @@ class DMD:
                 dual_controller = False
 
         self.stop_pattern()
-        self.set_input_source(2)          # flash/internal image source
         self.set_display_mode("otf")
         self.setup_pattern_LUT_definition(
             pattern_index=0, exposuretime=exposure_us, darktime=dark_us,
