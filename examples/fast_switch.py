@@ -19,14 +19,15 @@ W, H = 1920, 1080
 with DMD() as dmd:
     print("connected:", dmd.get_hardware())
 
-    # --- one-time setup (the slow part) ---
-    # load_patterns enters OTF mode and uploads the list into slots 0,1,...
-    # (handling the required descending upload order for you).
+    # --- one-time setup ---
+    # load_patterns enters OTF mode once (the ~0.5 s mode change) and caches the
+    # image list; display_pattern(i) then shows images[i] by re-streaming it
+    # (~0.1-0.2 s) WITHOUT redoing the slow mode change.
     dmd.load_patterns([
-        patterns.solid(W, H, 255),             # slot 0
-        patterns.circle(W, H, radius=270),     # slot 1
+        patterns.solid(W, H, 255),             # index 0
+        patterns.circle(W, H, radius=270),     # index 1
     ])
-    print("patterns uploaded.")
+    print("patterns ready.")
 
     # --- fast toggling (each switch is ~instant) ---
     current = 0

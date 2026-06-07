@@ -148,6 +148,10 @@ class DMD:
         self.read_delay = 0.05      # seconds to wait after writing, before reading
         self.read_retries = 6       # how many times to re-issue a read that comes back empty
 
+        # Cache of images for the fast load_patterns / display_pattern workflow.
+        self._patterns: list[Image.Image] = []
+        self._pattern_dual = False
+
         # Confirm the link actually works.
         try:
             self.hardware = self.get_hardware()[0]
@@ -660,41 +664,43 @@ class DMD:
         self.upload_image(index, image, dual_controller=dual_controller,
                           progress=progress)
 
-    def load_patterns(self, images, dual_controller: bool = False,
-                      progress: bool = True) -> int:
+    def load_patterns(self, images, dual_controller: bool = False) -> int:
         """
-        Enter OTF mode and bulk-load a list of images into pattern RAM, so that
-        ``images[i]`` lives in slot ``i``. Handles the controller's required
-        descending upload order for you. Returns the number of patterns loaded.
+        Prepare a set of images for fast display: enter OTF mode once and cache
+        the image list, so that display_pattern(i) shows ``images[i]``.
 
-        These live in volatile RAM (lost on power-cycle/reset), so call this once
-        per session; afterwards display_pattern(i) switches between them instantly.
-        Up to 18 patterns (slots 0-17).
+        Note: the DLPC900 doesn't reliably hold multiple OTF images for pure
+        index-switching, so display_pattern re-streams the selected image each
+        time. That re-stream is only ~0.1-0.2 s; the win is that switching no
+        longer pays the ~0.5 s OTF mode-change that show_image_otf repeats.
+
+        Returns the number of patterns cached. Up to 18.
         """
-        images = list(images)
-        if len(images) > 18:
-            raise ValueError("At most 18 patterns (slots 0-17) fit in RAM.")
+        self._patterns = list(images)
+        if len(self._patterns) > 18:
+            raise ValueError("At most 18 patterns supported.")
+        self._pattern_dual = dual_controller
         self.enter_otf_mode()
-        for i in reversed(range(len(images))):   # highest index first
-            if progress:
-                print(f"loading pattern {i + 1}/{len(images)} (slot {i}) ...")
-            self.upload_pattern(i, images[i], dual_controller=dual_controller)
-        return len(images)
+        return len(self._patterns)
 
     def display_pattern(self, index: int, exposure_us: int = 1_000_000,
                         dark_us: int = 0, bitdepth: int = 8, color: int = 7):
         """
-        Display an already-uploaded pattern by its memory ``index`` -- fast,
-        because it only re-points the 1-entry LUT and restarts; it does NOT
-        re-upload the image or re-enter OTF mode.
-
-        Requires enter_otf_mode() + upload_pattern(index, ...) to have run first.
+        Display cached pattern ``index`` (from load_patterns). Re-streams the
+        image and shows it, but does NOT re-enter OTF mode, so it's fast.
         """
+        if not self._patterns:
+            raise DMDError("No patterns loaded; call load_patterns([...]) first.")
+        if not 0 <= index < len(self._patterns):
+            raise IndexError(f"pattern index {index} out of range "
+                             f"(0-{len(self._patterns) - 1})")
         self.stop_pattern()
         self.setup_pattern_LUT_definition(
             pattern_index=0, exposuretime=exposure_us, darktime=dark_us,
-            bitdepth=bitdepth, color=color, image_pattern_index=index)
+            bitdepth=bitdepth, color=color, image_pattern_index=0)
         self.configure_pattern_from_LUT(nr_of_LUT_entries=1, nr_of_patterns_to_display=0)
+        self.upload_image(0, self._patterns[index],
+                          dual_controller=self._pattern_dual, progress=False)
         self.start_pattern()
 
 
