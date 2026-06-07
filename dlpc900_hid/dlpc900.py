@@ -242,8 +242,13 @@ class DMD:
             answer = parse_reply(self._read_report())
             if answer is None:
                 raise DMDError("No reply received from DMD for a read command.")
-            if not answer[0]:
-                warnings.warn('DMD reply has error flag set!')
+            # answer[0] is the error flag (reply flag-byte bit 5, 0x20). Warn only
+            # when it is actually SET. (Upstream had this condition inverted, so it
+            # cried "error flag set!" on every normal, error-free reply.)
+            if answer[0]:
+                warnings.warn(
+                    "DMD reply has its error flag (0x20) set for command "
+                    f"{command:#06x}.")
             return answer
         return None
 
