@@ -33,13 +33,26 @@ pip install git+https://github.com/shentevski/dlp6500-hid.git
 pip install git+https://<YOUR_TOKEN>@github.com/shentevski/dlp6500-hid.git
 ```
 
-To hack on it locally instead, clone and install editable:
+### Editable / multi-machine workflow (recommended for development)
+
+Clone once and install in **editable** mode. After that, code changes only need
+`git pull` — the installed package points at the cloned source, so there's no
+reinstall for `.py` edits.
 
 ```bash
+# one-time, on every machine (dev box and lab PC):
+gh auth login                                          # private repo needs auth
 git clone https://github.com/shentevski/dlp6500-hid.git
 cd dlp6500-hid
-pip install -e .
+pip install -e .                                       # editable install + deps
+
+# day to day:
+#   on the dev machine:   git add -A && git commit -m "..." && git push
+#   on the other machine: git pull          <- changes are live immediately
 ```
+
+Only re-run `pip install -e .` if you change **dependencies** in
+`pyproject.toml` (editable mode already covers all Python source edits).
 
 > **Distribution name is `dlp6500-hid`, but you `import dlpc900_hid`** (like
 > `pip install pillow` → `import PIL`).
