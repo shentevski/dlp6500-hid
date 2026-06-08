@@ -161,10 +161,10 @@ class DMD:
         self._patterns: list = []
         self._pattern_dual = False
 
-        # Pattern image compression. 'rle' (basic, type 1) is the default
-        # because some DLP6500 units mis-decode 'erle' (enhanced, type 2) for
-        # thin diagonal patterns. Options: 'rle', 'erle', 'none'.
-        self.compression = 'rle'
+        # Pattern image compression: 'erle' (enhanced, type 2 -- smallest/fastest)
+        # / 'rle' (basic, type 1) / 'none' (uncompressed). Enhanced is the default
+        # now that data-load acks are disabled (the real cause of RLE dropouts).
+        self.compression = 'erle'
 
         # Confirm the link actually works.
         try:
@@ -226,13 +226,17 @@ class DMD:
                 break
 
     def _build_reports(self, mode: str, sequence_byte: int, command: int,
-                       payload: list[int]) -> list[list[int]]:
+                       payload: list[int], request_reply: bool = True) -> list[list[int]]:
         """Build the list of 64-byte reports for one command."""
         buffer: list[int] = []
 
-        # Flag byte: 0xC0 for read, 0x40 for write.
-        flag_string = ('1' if mode == 'r' else '0') + '1000000'
-        buffer.append(bits_to_bytes(flag_string)[0])
+        # Flag byte: bit7 = read, bit6 = reply/ack requested.
+        # Reads always need a reply; writes request one EXCEPT data-load commands
+        # (TI clears the ack bit for PATMEM_LOAD_DATA so on-the-fly decompression
+        # isn't disturbed mid-stream -- requesting an ack there corrupts RLE).
+        read = (mode == 'r')
+        reply = read or request_reply
+        buffer.append((0x80 if read else 0) | (0x40 if reply else 0))
 
         # Sequence byte.
         buffer.append(sequence_byte)
@@ -267,7 +271,7 @@ class DMD:
         return reports
 
     def send_command(self, mode: str, sequence_byte: int, command: int,
-                     payload: list[int] | None = None):
+                     payload: list[int] | None = None, request_reply: bool = True):
         """
         Send a command to the DMD.
 
@@ -281,11 +285,15 @@ class DMD:
             16-bit command opcode from the DLPC900 user guide (e.g. 0x1A1B).
         payload : list[int], optional
             Data bytes for the command.
+        request_reply : bool
+            For writes, whether to set the ack/reply bit. Clear it for pattern
+            data-load commands (matches TI; avoids corrupting RLE decompression).
         """
         if payload is None:
             payload = []
 
-        reports = self._build_reports(mode, sequence_byte, command, payload)
+        reports = self._build_reports(mode, sequence_byte, command, payload,
+                                      request_reply=request_reply)
 
         if mode != 'r':
             for report in reports:
@@ -574,7 +582,9 @@ class DMD:
         command = {0: 0x1A2B, 1: 0x1A2D}.get(controller)
         if command is None:
             raise ValueError(f"{controller} is not a valid controller (0 or 1)")
-        self.send_command('w', 0, command, payload)
+        # request_reply=False: do NOT ask for an ack on data loads (matches TI;
+        # an ack mid-stream corrupts the DMD's on-the-fly RLE decompression).
+        self.send_command('w', 0, command, payload, request_reply=False)
 
     def _encode_image(self, image: Image.Image, dual_controller: bool = False,
                       compression: str | None = None):
