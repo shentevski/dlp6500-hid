@@ -45,13 +45,16 @@ def _emit_raw(out: bytearray, wire: np.ndarray, start: int, count: int):
         out += wire[start:start + count].tobytes()
 
 
-def enhanced_rle_encode(image: Image.Image, vertical_rle: bool = True) -> bytes:
+def enhanced_rle_encode(image: Image.Image, vertical_rle: bool = False) -> bytes:
     """
-    Encode a Pillow image into the DLPC900 enhanced-RLE 'Spld' byte stream,
-    byte-compatible with TI's GUI encoder.
+    Encode a Pillow image into the DLPC900 enhanced-RLE 'Spld' byte stream
+    (header + control bytes ported from TI's compress.c / splash.c).
 
-    vertical_rle : use the copy-from-previous-line command (TI default, best
-        compression). Set False to disable it (horizontal RLE only).
+    vertical_rle : use the copy-from-previous-line command. TI's encoder uses it
+        for best compression, BUT this DLPC900/DLP6500 silicon mis-displays thin
+        diagonal patterns that use copy-previous (periodic dropouts), so we
+        DEFAULT IT OFF (horizontal RLE only) -- still small and fast, and avoids
+        the hardware quirk. Set True to re-enable maximal compression.
     """
     if image.mode != 'RGB':
         image = image.convert('RGB')
