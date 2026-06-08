@@ -100,6 +100,37 @@ def test_invert_flag_swaps_fg_bg():
     assert (on == (255 - off)).all()
 
 
+def test_offset_positions_relative_to_center():
+    mw = patterns.MixWavelengths()
+    # offset=0 must equal the auto-centered line (position=None), any angle
+    a = np.asarray(mw.one_line(None, 40, orientation="45"))
+    b = np.asarray(mw.one_line(width=40, orientation="45", offset=0))
+    assert (a == b).all()
+
+    # vertical offset shifts the column by exactly `offset` px from center
+    g = _gray(mw.one_line(width=20, orientation="vertical", offset=100))
+    cols = np.where(g[H // 2] == 255)[0]
+    center_col = (cols.min() + cols.max()) / 2.0
+    assert abs(center_col - ((W - 1) / 2.0 + 100)) <= 1.0
+
+    # two symmetric offsets -> two bands centered at center +/- 150
+    g = _gray(mw.two_lines(offsets=[-150, 150], widths=[20, 20], orientation="vertical"))
+    on = np.where(g[H // 2] == 255)[0]
+    split = np.where(np.diff(on) > 1)[0][0]
+    left, right = on[:split + 1], on[split + 1:]
+    cx = (W - 1) / 2.0
+    assert abs((left.min() + left.max()) / 2.0 - (cx - 150)) <= 1.0
+    assert abs((right.min() + right.max()) / 2.0 - (cx + 150)) <= 1.0
+
+    # wrong offset count still raises
+    try:
+        mw.two_lines(offsets=[0], widths=[10])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("wrong offset count should raise ValueError")
+
+
 def test_hbbrush_circle_and_ring():
     hb = patterns.HBBrush()
     c = _gray(hb.circle(center=(960, 540), radius=300, on=True))

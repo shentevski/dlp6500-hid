@@ -164,23 +164,45 @@ class MixWavelengths(_PatternSet):
 
         return self._render(mask, on)
 
+    def _center_projection(self, orientation) -> float:
+        """
+        Projection value of the canvas CENTER for this orientation. Adding an
+        `offset` (pixels) to it shifts a line `offset` px perpendicular to
+        itself from the chip center -- the natural knob for scanning a stripe
+        across the field of view (offset=0 -> centered, for any angle).
+        """
+        angle = np.deg2rad(self._resolve_angle(orientation))
+        return ((self.width - 1) / 2.0) * np.sin(angle) + \
+               ((self.height - 1) / 2.0) * np.cos(angle)
+
     # ---- public 1/2/3-line patterns (thin wrappers over _lines) -----------
     # `orientation` is a name ("vertical"/"horizontal"/"45"/...) or degrees.
+    # Place a line either absolutely (`position`/`positions` = the perpendicular
+    # projection) OR relative to the chip center (`offset`/`offsets`, in pixels;
+    # 0 = centered). The center-relative form takes precedence when given.
     def one_line(self, position=None, width=20, on: bool = True,
-                 orientation="vertical") -> Image.Image:
-        # position=None centers the line on the canvas.
+                 orientation="vertical", offset=None) -> Image.Image:
+        if offset is not None:
+            position = self._center_projection(orientation) + offset
+        # position=None also centers the line on the canvas.
         return self._lines([position], [width], on=on, orientation=orientation)
 
-    def two_lines(self, positions, widths, on: bool = True,
-                  orientation="vertical") -> Image.Image:
-        if len(positions) != 2 or len(widths) != 2:
-            raise ValueError("two_lines expects 2 positions and 2 widths")
+    def two_lines(self, positions=None, widths=None, on: bool = True,
+                  orientation="vertical", offsets=None) -> Image.Image:
+        if offsets is not None:
+            cp = self._center_projection(orientation)
+            positions = [cp + o for o in offsets]
+        if positions is None or widths is None or len(positions) != 2 or len(widths) != 2:
+            raise ValueError("two_lines expects 2 positions (or offsets) and 2 widths")
         return self._lines(positions, widths, on=on, orientation=orientation)
 
-    def three_lines(self, positions, widths, on: bool = True,
-                    orientation="vertical") -> Image.Image:
-        if len(positions) != 3 or len(widths) != 3:
-            raise ValueError("three_lines expects 3 positions and 3 widths")
+    def three_lines(self, positions=None, widths=None, on: bool = True,
+                    orientation="vertical", offsets=None) -> Image.Image:
+        if offsets is not None:
+            cp = self._center_projection(orientation)
+            positions = [cp + o for o in offsets]
+        if positions is None or widths is None or len(positions) != 3 or len(widths) != 3:
+            raise ValueError("three_lines expects 3 positions (or offsets) and 3 widths")
         return self._lines(positions, widths, on=on, orientation=orientation)
 
 
