@@ -26,7 +26,15 @@ import warnings
 import hid
 import PIL.Image as Image
 
-from .erle import enhanced_rle_encode, uncompressed_encode
+from .erle import (enhanced_rle_encode, basic_rle_encode, uncompressed_encode)
+
+# image encoders by compression name (header compression-type byte in parens)
+_ENCODERS = {
+    'rle': basic_rle_encode,        # type 1 -- basic RLE (DLP6500-safe default)
+    'erle': enhanced_rle_encode,    # type 2 -- enhanced RLE (smallest, but some
+                                    #            DLP6500 units mis-decode it)
+    'none': uncompressed_encode,    # type 0 -- uncompressed (~6 MB, slow)
+}
 from .errors import DMDError
 
 # TI / DLPC900 USB identifiers.
@@ -152,6 +160,11 @@ class DMD:
         # of pre-encoded patterns, each a list of (controller, encoded_bytes).
         self._patterns: list = []
         self._pattern_dual = False
+
+        # Pattern image compression. 'rle' (basic, type 1) is the default
+        # because some DLP6500 units mis-decode 'erle' (enhanced, type 2) for
+        # thin diagonal patterns. Options: 'rle', 'erle', 'none'.
+        self.compression = 'rle'
 
         # Confirm the link actually works.
         try:
@@ -564,14 +577,13 @@ class DMD:
         self.send_command('w', 0, command, payload)
 
     def _encode_image(self, image: Image.Image, dual_controller: bool = False,
-                      uncompressed: bool = False):
+                      compression: str | None = None):
         """
-        Encode an image into a list of (controller, encoded_bytes) tasks.
-        Encoding is the slow (~100 ms) Python step; cache the result to make
-        re-uploads fast. For dual controllers the image is split left/right.
-        ``uncompressed=True`` skips ERLE (diagnostic; ~6 MB, slow upload).
+        Encode an image into a list of (controller, encoded_bytes) tasks, using
+        `compression` (defaults to self.compression: 'rle' / 'erle' / 'none').
+        For dual controllers the image is split left/right.
         """
-        enc = uncompressed_encode if uncompressed else enhanced_rle_encode
+        enc = _ENCODERS[compression or self.compression]
         if dual_controller:
             width, height = image.size
             half = width // 2
@@ -611,16 +623,18 @@ class DMD:
 
     def upload_image(self, image_index: int, image: Image.Image,
                      dual_controller: bool = False, progress: bool = True,
-                     uncompressed: bool = False):
+                     uncompressed: bool = False, compression: str | None = None):
         """
-        Compress (ERLE) and upload an image to the device's pattern memory.
+        Compress and upload an image to the device's pattern memory.
 
         image_index : 0-17. Fill from high to low (upload 17 before 16 ...).
         dual_controller : split the image across two controllers (e.g. DLP9000).
-        uncompressed : diagnostic; skip ERLE and send raw bytes (~6 MB, slow).
+        compression : 'rle' / 'erle' / 'none' (defaults to self.compression).
+        uncompressed : shorthand for compression='none' (diagnostic, ~6 MB).
         """
+        comp = 'none' if uncompressed else compression
         for controller, encoded in self._encode_image(image, dual_controller,
-                                                       uncompressed=uncompressed):
+                                                       compression=comp):
             self._send_encoded(image_index, encoded, controller=controller,
                                progress=progress)
 
@@ -629,7 +643,8 @@ class DMD:
     # ----------------------------------------------------------------------- #
     def show_image_otf(self, image: Image.Image, exposure_us: int = 1_000_000,
                        dark_us: int = 0, bitdepth: int = 8, color: int = 7,
-                       dual_controller: bool = False, uncompressed: bool = False):
+                       dual_controller: bool = False, uncompressed: bool = False,
+                       compression: str | None = None):
         """
         Display a single image in on-the-fly mode (looped indefinitely).
 
@@ -657,7 +672,7 @@ class DMD:
         if uncompressed:
             print("Uploading UNCOMPRESSED (~6 MB) -- this takes a while...")
         self.upload_image(0, image, dual_controller=dual_controller,
-                          uncompressed=uncompressed)
+                          uncompressed=uncompressed, compression=compression)
         self.start_pattern()
 
     # ----------------------------------------------------------------------- #

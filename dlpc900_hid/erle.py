@@ -128,6 +128,83 @@ def enhanced_rle_encode(image: Image.Image, vertical_rle: bool = False) -> bytes
     return bytes(out)
 
 
+def basic_rle_encode(image: Image.Image) -> bytes:
+    """
+    Encode with TI's BASIC RLE (compression type 1) -- a faithful port of
+    compress.c::RLE_CompressBMP. No copy-from-previous-line, run counts capped
+    at 255 (single byte), per-line 0x00 0x00 EOL + 4-byte alignment, end-of-
+    image 0x00 0x01 + 16-byte alignment.
+
+    This is the format to use on DLP6500 units whose hardware mis-decodes the
+    *enhanced* RLE (type 2) for thin diagonal patterns. Larger than enhanced RLE
+    but still far smaller than uncompressed, so uploads stay fast.
+    """
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
+
+    width, height = image.size
+    arr = np.asarray(image)
+    key = (arr[:, :, 0].astype(np.uint32) << 16) | \
+          (arr[:, :, 1].astype(np.uint32) << 8) | arr[:, :, 2].astype(np.uint32)
+    wire = np.stack([arr[:, :, 0], arr[:, :, 2], arr[:, :, 1]],
+                    axis=-1).astype(np.uint8)               # [R, B, G] per pixel
+
+    out = bytearray(48)                                     # header placeholder
+
+    def flush_raw(w, start, raw):
+        if raw == 1:
+            out.append(1)
+            out.extend(w[start].tobytes())
+        elif raw > 1:
+            out.append(0)
+            out.append(raw)
+            out.extend(w[start:start + raw].tobytes())
+
+    for y in range(height):
+        k = key[y]
+        w = wire[y]
+        x = 0
+        raw = 0
+        while x < width:
+            maxrun = min(255, width - x)
+            seg = k[x:x + maxrun]
+            nz = np.flatnonzero(seg != k[x])
+            repeat = int(nz[0]) if nz.size else maxrun
+            if repeat > 1 or raw == 255:
+                if raw:
+                    flush_raw(w, x - raw, raw)
+                    raw = 0
+                if repeat > 1:
+                    out.append(repeat)                      # single-byte count
+                    out += w[x].tobytes()
+                    x += repeat
+            else:
+                x += 1
+                raw += 1
+        if raw:
+            flush_raw(w, x - raw, raw)
+        if y == height - 1:
+            break
+        out += b'\x00\x00'                                  # end of line
+        out += bytes((4 - (len(out) & 3)) & 3)              # 4-byte align
+
+    out += b'\x00\x01'                                      # end of image
+    out += bytes((16 - (len(out) & 0xF)) & 0xF)             # 16-byte align
+
+    out[0:4] = b'Spld'
+    struct.pack_into('<H', out, 4, width)
+    struct.pack_into('<H', out, 6, height)
+    struct.pack_into('<I', out, 8, len(out) - 48)
+    struct.pack_into('<I', out, 12, 0xFFFFFFFF)
+    struct.pack_into('<I', out, 16, 0xFFFFFFFF)
+    struct.pack_into('<I', out, 20, 0x00000000)
+    out[24] = 1                                             # Pixel_format = packed RGB
+    out[25] = 1                                             # Compression = basic RLE
+    out[26] = 1                                             # ByteOrder
+    out[29] = 1                                             # IsLeftImage
+    return bytes(out)
+
+
 def uncompressed_encode(image: Image.Image) -> bytes:
     """
     Encode an image with NO compression (compression type 0): 48-byte header +
