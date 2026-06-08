@@ -137,3 +137,36 @@ def enhanced_rle_encode(image: Image.Image, vertical_rle: bool = False) -> bytes
     encoded[25] = 0x02   # Enhanced RLE
     encoded[26] = 0x01
     return bytes(encoded)
+
+
+def uncompressed_encode(image: Image.Image) -> bytes:
+    """
+    Encode a Pillow image into the DLPC900 BMP stream with NO compression
+    (compression type 0): 48-byte header + raw B,G,R bytes per pixel, row-major.
+
+    This is mainly a DIAGNOSTIC: it removes the RLE compressor from the pipeline
+    entirely (~6 MB for 1920x1080, slow to upload). If a pattern displays when
+    uncompressed but not when RLE-compressed, the compressor is the culprit; if
+    it fails uncompressed too, the issue is downstream (upload / DMD).
+    """
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
+
+    width, height = image.size
+    arr = np.asarray(image)
+    # RGB -> B,G,R per pixel (matching the ERLE pixel byte order), row-major.
+    payload = arr[:, :, ::-1].astype(np.uint8).tobytes()
+
+    encoded = bytearray(48) + bytearray(payload)
+    encoded += bytearray((-len(encoded)) % 4)
+
+    encoded[0:4] = b'Spld'
+    struct.pack_into('<H', encoded, 4, width)
+    struct.pack_into('<H', encoded, 6, height)
+    struct.pack_into('<I', encoded, 8, len(encoded) - 48)
+    encoded[12:20] = b'\xFF' * 8
+    encoded[20:24] = b'\x00\x00\x00\x00'
+    encoded[24] = 0x00
+    encoded[25] = 0x00   # compression type 0 = uncompressed
+    encoded[26] = 0x01
+    return bytes(encoded)

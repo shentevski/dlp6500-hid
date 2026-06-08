@@ -26,7 +26,7 @@ import warnings
 import hid
 import PIL.Image as Image
 
-from .erle import enhanced_rle_encode
+from .erle import enhanced_rle_encode, uncompressed_encode
 from .errors import DMDError
 
 # TI / DLPC900 USB identifiers.
@@ -563,18 +563,21 @@ class DMD:
             raise ValueError(f"{controller} is not a valid controller (0 or 1)")
         self.send_command('w', 0, command, payload)
 
-    def _encode_image(self, image: Image.Image, dual_controller: bool = False):
+    def _encode_image(self, image: Image.Image, dual_controller: bool = False,
+                      uncompressed: bool = False):
         """
-        ERLE-encode an image into a list of (controller, encoded_bytes) tasks.
+        Encode an image into a list of (controller, encoded_bytes) tasks.
         Encoding is the slow (~100 ms) Python step; cache the result to make
         re-uploads fast. For dual controllers the image is split left/right.
+        ``uncompressed=True`` skips ERLE (diagnostic; ~6 MB, slow upload).
         """
+        enc = uncompressed_encode if uncompressed else enhanced_rle_encode
         if dual_controller:
             width, height = image.size
             half = width // 2
-            return [(0, enhanced_rle_encode(image.crop((0, 0, half, height)))),
-                    (1, enhanced_rle_encode(image.crop((half, 0, width, height))))]
-        return [(0, enhanced_rle_encode(image))]
+            return [(0, enc(image.crop((0, 0, half, height)))),
+                    (1, enc(image.crop((half, 0, width, height))))]
+        return [(0, enc(image))]
 
     def _send_encoded(self, image_index: int, encoded, controller: int = 0,
                       progress: bool = False):
@@ -607,14 +610,17 @@ class DMD:
                 print(f"Controller {controller}: uploaded chunk {i + 1}/{len(chunks)}")
 
     def upload_image(self, image_index: int, image: Image.Image,
-                     dual_controller: bool = False, progress: bool = True):
+                     dual_controller: bool = False, progress: bool = True,
+                     uncompressed: bool = False):
         """
         Compress (ERLE) and upload an image to the device's pattern memory.
 
         image_index : 0-17. Fill from high to low (upload 17 before 16 ...).
         dual_controller : split the image across two controllers (e.g. DLP9000).
+        uncompressed : diagnostic; skip ERLE and send raw bytes (~6 MB, slow).
         """
-        for controller, encoded in self._encode_image(image, dual_controller):
+        for controller, encoded in self._encode_image(image, dual_controller,
+                                                       uncompressed=uncompressed):
             self._send_encoded(image_index, encoded, controller=controller,
                                progress=progress)
 
@@ -623,7 +629,7 @@ class DMD:
     # ----------------------------------------------------------------------- #
     def show_image_otf(self, image: Image.Image, exposure_us: int = 1_000_000,
                        dark_us: int = 0, bitdepth: int = 8, color: int = 7,
-                       dual_controller: bool = False):
+                       dual_controller: bool = False, uncompressed: bool = False):
         """
         Display a single image in on-the-fly mode (looped indefinitely).
 
@@ -637,6 +643,10 @@ class DMD:
         like the DLP6500 / DLPLCR900EVM, where the whole image goes to one
         controller). Set it True only on a dual-DLPC900 board (e.g. DLP9000),
         where the image is split into left/right halves across both controllers.
+
+        ``uncompressed=True`` uploads the raw image with NO RLE (diagnostic;
+        ~6 MB, takes tens of seconds). Use it to tell whether a missing pattern
+        is the compressor's fault or downstream (upload / DMD).
         """
         self.stop_pattern()
         self.set_display_mode("otf")
@@ -644,7 +654,10 @@ class DMD:
             pattern_index=0, exposuretime=exposure_us, darktime=dark_us,
             bitdepth=bitdepth, color=color, image_pattern_index=0)
         self.configure_pattern_from_LUT(nr_of_LUT_entries=1, nr_of_patterns_to_display=0)
-        self.upload_image(0, image, dual_controller=dual_controller)
+        if uncompressed:
+            print("Uploading UNCOMPRESSED (~6 MB) -- this takes a while...")
+        self.upload_image(0, image, dual_controller=dual_controller,
+                          uncompressed=uncompressed)
         self.start_pattern()
 
     # ----------------------------------------------------------------------- #
