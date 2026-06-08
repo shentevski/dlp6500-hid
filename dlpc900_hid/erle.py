@@ -92,10 +92,16 @@ def _encode_row(row: np.ndarray, prev_row: np.ndarray) -> bytearray:
     return compressed
 
 
-def enhanced_rle_encode(image: Image.Image) -> bytes:
+def enhanced_rle_encode(image: Image.Image, vertical_rle: bool = False) -> bytes:
     """
     Encode a Pillow image into the DLPC900 ERLE byte stream (48-byte header +
     compressed payload). The image is interpreted as RGB; convert beforehand.
+
+    vertical_rle : if True, use the "copy from previous row" command (better
+        compression). Default False -> horizontal RLE only. Some DLPC900 setups
+        mis-display thin diagonal patterns that rely on copy-previous-row
+        (vertical lines, which copy whole rows, are unaffected); horizontal-only
+        is the robust mode and only slightly larger.
     """
     if image.mode != 'RGB':
         image = image.convert('RGB')
@@ -112,7 +118,8 @@ def enhanced_rle_encode(image: Image.Image) -> bytes:
     prev_row = None
     for y in range(height):
         row = img_uint32[y]
-        encoded += _encode_row(row, prev_row)
+        # Passing prev_row=None disables the "copy previous row" command.
+        encoded += _encode_row(row, prev_row if vertical_rle else None)
         prev_row = row
 
     # End-of-image marker + pad to 4-byte boundary.
