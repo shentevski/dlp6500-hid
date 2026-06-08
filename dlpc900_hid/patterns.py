@@ -34,21 +34,10 @@ def circle(width: int, height: int,
     """
     Generate a filled circle.
 
-    Parameters
-    ----------
-    width, height : int
-        Image size in pixels; use the DMD's native resolution.
-    radius : float, optional
-        Circle radius in pixels. Defaults to 1/4 of the smaller dimension.
-    center : (x, y), optional
-        Circle center in pixels. Defaults to the image center.
-    fg, bg : int
-        Foreground (inside circle) and background gray levels, 0-255.
-
-    Returns
-    -------
-    PIL.Image.Image
-        8-bit RGB image with a white circle on a black field.
+    width, height : image size in pixels (use the DMD's native resolution).
+    radius : circle radius in pixels (defaults to 1/4 of the smaller dimension).
+    center : (x, y) in pixels (defaults to the image center).
+    fg, bg : foreground (inside) and background gray levels, 0-255.
     """
     if center is None:
         center = (width / 2.0, height / 2.0)
@@ -77,3 +66,149 @@ def solid(width: int, height: int, level: int = 255) -> Image.Image:
     """Generate a solid field of a single gray level (255 = all mirrors on)."""
     gray = np.full((height, width), level, dtype=np.uint8)
     return Image.fromarray(np.stack([gray] * 3, axis=-1), "RGB")
+
+
+# ===========================================================================
+# Experiment pattern sets
+# ===========================================================================
+# Conventions used throughout:
+#   * Canvas is the DMD native resolution (1920x1080 for the DLP6500).
+#   * Everything is built as a boolean mask of shape (height, width) == (y, x),
+#     then turned into a hard-edged binary RGB image (no anti-aliasing).
+#   * `on=True`  -> the shape is bright (255) on a dark (0) background.
+#     `on=False` -> inverted: the shape is dark (0) on a bright (255) field.
+#   * Positions/centers are in pixels; line `position` is the CENTER of the line.
+
+
+class _PatternSet:
+    """Base class: holds the canvas size and the mask -> image conversion."""
+
+    def __init__(self, width: int = 1920, height: int = 1080):
+        self.width = width
+        self.height = height
+
+    def _render(self, mask: np.ndarray, on: bool = True) -> Image.Image:
+        """Turn a bool mask (True = the shape) into a binary RGB image."""
+        fg, bg = (255, 0) if on else (0, 255)
+        return _to_rgb(mask, fg, bg)          # reuse helper already in this file
+
+    def _blank_mask(self) -> np.ndarray:
+        return np.zeros((self.height, self.width), dtype=bool)
+
+
+class MixWavelengths(_PatternSet):
+    """Patterns for the wavelength-mixing experiment: solid fields and 1-3 lines."""
+
+    # `orientation` may be one of these names OR any number = angle in degrees
+    # (0 = horizontal, 90 = vertical; measured CCW in image coordinates).
+    NAMED_ANGLES = {
+        "horizontal": 0.0, "vertical": 90.0,
+        "45": 45.0, "diagonal": 45.0,
+        "-45": 135.0, "135": 135.0, "antidiagonal": 135.0,
+    }
+
+    def _resolve_angle(self, orientation) -> float:
+        """Map an orientation (name string or numeric degrees) to degrees."""
+        if isinstance(orientation, (int, float)):
+            return float(orientation)
+        try:
+            return self.NAMED_ANGLES[orientation]
+        except KeyError:
+            raise ValueError(
+                f"unknown orientation {orientation!r}; pass a number (degrees) "
+                f"or one of {sorted(self.NAMED_ANGLES)}")
+
+    # ---- solid fields -----------------------------------------------------
+    def solid_on(self) -> Image.Image:
+        """Every mirror ON (full bright field)."""
+        return self._render(np.ones((self.height, self.width), dtype=bool), on=True)
+
+    def solid_off(self) -> Image.Image:
+        """Every mirror OFF (full dark field)."""
+        return self._render(np.ones((self.height, self.width), dtype=bool), on=False)
+
+    # ---- the general N-line engine (private) ------------------------------
+    def _lines(self, positions, widths, on: bool = True,
+               orientation="vertical") -> Image.Image:
+        """
+        Draw len(positions) parallel lines at any orientation.
+
+        `orientation` is a name ("vertical", "horizontal", "45", ...) or a
+        number = angle in degrees. `positions[i]` is the perpendicular offset
+        of line i and `widths[i]` its (perpendicular) thickness, both in pixels.
+        For "vertical" the offset is the column x, for "horizontal" the row y;
+        for any other angle it is the projection  x*sin(a) + y*cos(a). Pass a
+        position of None to center that line. All lines live in one mask, so
+        `on` toggles the whole group together.
+        """
+        positions = list(positions)
+        widths = list(widths)
+        if len(positions) != len(widths):
+            raise ValueError("positions and widths must have the same length")
+
+        angle = np.deg2rad(self._resolve_angle(orientation))
+        s, c = np.sin(angle), np.cos(angle)
+
+        # proj[y, x] = perpendicular coordinate of each pixel for this angle.
+        yy, xx = np.ogrid[:self.height, :self.width]
+        proj = xx * s + yy * c                       # broadcasts to (H, W) float
+
+        # projection of the canvas center, used when a position is None.
+        center_proj = ((self.width - 1) / 2.0) * s + ((self.height - 1) / 2.0) * c
+
+        mask = self._blank_mask()
+        for pos, w in zip(positions, widths):
+            if pos is None:
+                pos = center_proj
+            mask |= np.abs(proj - pos) <= (w / 2.0)  # OR each line's band in
+
+        return self._render(mask, on)
+
+    # ---- public 1/2/3-line patterns (thin wrappers over _lines) -----------
+    # `orientation` is a name ("vertical"/"horizontal"/"45"/...) or degrees.
+    def one_line(self, position=None, width=20, on: bool = True,
+                 orientation="vertical") -> Image.Image:
+        # position=None centers the line on the canvas.
+        return self._lines([position], [width], on=on, orientation=orientation)
+
+    def two_lines(self, positions, widths, on: bool = True,
+                  orientation="vertical") -> Image.Image:
+        if len(positions) != 2 or len(widths) != 2:
+            raise ValueError("two_lines expects 2 positions and 2 widths")
+        return self._lines(positions, widths, on=on, orientation=orientation)
+
+    def three_lines(self, positions, widths, on: bool = True,
+                    orientation="vertical") -> Image.Image:
+        if len(positions) != 3 or len(widths) != 3:
+            raise ValueError("three_lines expects 3 positions and 3 widths")
+        return self._lines(positions, widths, on=on, orientation=orientation)
+
+
+class HBBrush(_PatternSet):
+    """Patterns for the HB-brush experiment: a filled disk and a ring."""
+
+    def circle(self, center=None, radius=None, on: bool = True) -> Image.Image:
+        """
+        Filled disk. `center=(x, y)` defaults to the image center; `radius` in
+        pixels defaults to 1/4 of the smaller dimension.
+        """
+        fg, bg = (255, 0) if on else (0, 255)
+        # NOTE: the bare name `circle` here resolves to the module-level
+        # circle() function above, NOT this method (methods need `self.`).
+        return circle(self.width, self.height, radius=radius, center=center,
+                      fg=fg, bg=bg)
+
+    def ring(self, center=None, radius=None, width=None, on: bool = True) -> Image.Image:
+        """
+        Annulus centered on radius `radius` with thickness `width` (pixels).
+        Converts (center-radius, width) -> (outer, inner) for the ring() helper.
+        """
+        if radius is None:
+            radius = min(self.width, self.height) / 4.0
+        if width is None:
+            width = max(1, int(radius * 0.1))
+        outer = radius + width / 2.0
+        inner = max(0.0, radius - width / 2.0)
+        fg, bg = (255, 0) if on else (0, 255)
+        return ring(self.width, self.height, outer_radius=outer,
+                    inner_radius=inner, center=center, fg=fg, bg=bg)
