@@ -11,6 +11,11 @@ via **Zadig**. This wrapper instead talks to the DMD through the **`hid`
 package**, which uses Windows' **built-in HID driver** — so **no driver
 installation is required**, and the TI GUI keeps working when you unplug/replug.
 
+> 📖 **New here? Read [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md)** — a
+> first-principles, pedagogical tour of USB-HID transport, the DLPC900 command
+> format, pattern-on-the-fly display, RLE compression, generating DMD-safe
+> patterns, and the debugging story behind it all.
+
 ## Install
 
 Install the package straight from GitHub (this pulls in `hidapi`, `pillow`, and
@@ -84,15 +89,62 @@ Or just run the bundled demo:
 python examples/circle_otf.py
 ```
 
+## Experiment pattern sets
+
+`patterns` also has two classes that generate ready-to-display binary images at
+the DMD's native resolution:
+
+```python
+from dlpc900_hid import DMD, patterns
+
+mw = patterns.MixWavelengths()   # solid_on/off, one_line, two_lines, three_lines
+hb = patterns.HBBrush()          # circle, ring
+
+mw.one_line(offset=0, width=20, orientation="45")   # one 45° stripe through center
+mw.three_lines(offsets=[-150, 0, 150], widths=[20, 20, 20], orientation="45")
+hb.ring(center=(960, 540), radius=300, width=40)
+```
+
+- **Lines** take an `orientation` (`"vertical"`, `"horizontal"`, `"45"`, or a
+  number in degrees) and either an absolute `position`/`positions` or a
+  center-relative `offset`/`offsets` (pixels; `0` = centered). On the DLP6500 a
+  *lab-horizontal* stripe is a **45° line in pixel space** (the mirror array is
+  rotated 45°) — see the doc.
+- `on=True` draws a bright shape on a dark field; `on=False` inverts it.
+
+## Fast multi-pattern switching
+
+```python
+dmd.load_patterns([mw.solid_on(), hb.circle(radius=270), mw.one_line(960, 20)])
+dmd.display_pattern(1)    # show the circle; switching is ~milliseconds
+```
+`load_patterns` encodes each image once; `display_pattern(i)` re-streams image
+`i` and restarts without the slow mode change.
+
+## Compression
+
+`dmd.compression` selects the pattern encoding (also per-call via `compression=`):
+
+| value | type | notes |
+|-------|------|-------|
+| `'erle'` | enhanced RLE | **default** — smallest, fastest upload |
+| `'rle'`  | basic RLE | fallback if a unit mis-decodes enhanced |
+| `'none'` | uncompressed | reliable but ~6 MB/upload (slow) |
+
+> **Important hardware note:** pattern *data-load* packets must be sent without
+> requesting an ACK, or the DMD's on-the-fly RLE decompression is corrupted (the
+> library does this for you). This was the root cause of a long "patterns don't
+> show" saga — see [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md) §5.
+
 ## What `show_image_otf` does
 
 It runs the full TI "Pattern On-The-Fly" sequence for you:
 
 1. `stop_pattern()` — stop any running sequence
-2. `set_input_source(2)` + `set_display_mode("otf")` — enter on-the-fly mode
+2. `set_display_mode("otf")` — enter on-the-fly mode
 3. `setup_pattern_LUT_definition(...)` — define a 1-entry LUT (exposure, color, bit depth)
 4. `configure_pattern_from_LUT(1, 0)` — show that 1 entry, loop forever
-5. `upload_image(0, image)` — ERLE-compress and stream the image over USB
+5. `upload_image(0, image)` — compress and stream the image over USB
 6. `start_pattern()` — display it
 
 You can call those steps individually if you want multiple patterns, triggering,

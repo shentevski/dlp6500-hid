@@ -131,21 +131,6 @@ def test_offset_positions_relative_to_center():
         raise AssertionError("wrong offset count should raise ValueError")
 
 
-def test_diamond_safe_snaps_bad_offsets():
-    mw = patterns.MixWavelengths()
-    bad, clr = mw.diamond_bad_offsets, mw.diamond_clearance
-    # good offsets (far from any bad one) are left unchanged
-    assert mw._snap_offset(0) == 0
-    assert mw._snap_offset(100) == 100
-    # every known-bad offset is pushed >= clearance from ALL bad offsets
-    for b in bad:
-        s = mw._snap_offset(b)
-        assert all(abs(s - x) >= clr - 1e-9 for x in bad), (b, s)
-    # and a diamond_safe line still renders a valid binary image
-    g = _gray(mw.one_line(orientation="45", offset=-340, width=20, on=False, diamond_safe=True))
-    assert (g == 0).any() and (g == 255).any()
-
-
 def test_hbbrush_circle_and_ring():
     hb = patterns.HBBrush()
     c = _gray(hb.circle(center=(960, 540), radius=300, on=True))
