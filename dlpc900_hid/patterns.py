@@ -101,10 +101,13 @@ class MixWavelengths(_PatternSet):
 
     # `orientation` may be one of these names OR any number = angle in degrees
     # (0 = horizontal, 90 = vertical; measured CCW in image coordinates).
+    # Note: "-45" resolves to the NUMBER -45.0 (matching a numeric -45), so the
+    # string and the number agree. "135" is the same *line* as -45 but with the
+    # opposite `offset` sign (its projection has the opposite sign).
     NAMED_ANGLES = {
         "horizontal": 0.0, "vertical": 90.0,
         "45": 45.0, "diagonal": 45.0,
-        "-45": 135.0, "135": 135.0, "antidiagonal": 135.0,
+        "-45": -45.0, "antidiagonal": -45.0, "135": 135.0,
     }
 
     def _resolve_angle(self, orientation) -> float:
@@ -204,6 +207,77 @@ class MixWavelengths(_PatternSet):
         if positions is None or widths is None or len(positions) != 3 or len(widths) != 3:
             raise ValueError("three_lines expects 3 positions (or offsets) and 3 widths")
         return self._lines(positions, widths, on=on, orientation=orientation)
+
+    # ---- mirror-row-indexed lines (EXACT geometry, 0/90/±45 only) ---------
+    # `_lines` above sizes a line by perpendicular DISTANCE in pixels. But
+    # mirrors sit on an integer lattice, so at ±45° (lattice spacing 1/√2 ≈
+    # 0.707 px) a width-w band spans √2·w rows -- never an integer -- and the
+    # actual mirror-row count flips (e.g. 1↔2 for width=1) as you sweep offset,
+    # varying the delivered area. The *_rows methods below index by MIRROR ROW
+    # instead, giving EXACTLY `width` rows at every offset. `width` and `offset`
+    # are counts of mirror rows (offset 0 = row through the chip centre; +offset
+    # shifts in the +projection direction, matching the distance `offset` sign).
+    # Defined only where a "row" is a straight lattice line: horizontal /
+    # vertical / +45 / -45. One offset step = 1 row = 1 px (H/V) or 1/√2 px
+    # (diagonal).
+    #
+    # Caveat -- constant row COUNT != constant AREA: a diagonal near a corner is
+    # shorter than one through the middle. On 1920x1080 every row is full length
+    # (1080 mirrors) for |offset| <= ~419 rows (~296 px); beyond that the area
+    # tapers (~27% by ±700 rows). Horizontal/vertical rows are always full.
+    def _row_index(self, orientation):
+        """
+        Return (d, centre): d is an integer (H, W) array giving each pixel's
+        mirror-row index, centre is d at the chip centre. Only horizontal /
+        vertical / +45 / -45 orientations are supported (a "row" must be a
+        straight lattice line).
+        """
+        a = self._resolve_angle(orientation)
+        s, c = np.sin(np.deg2rad(a)), np.cos(np.deg2rad(a))
+        sgn = lambda v: 0 if abs(v) < 1e-6 else (1 if v > 0 else -1)
+        ss, cc = sgn(s), sgn(c)
+        if ss != 0 and cc != 0 and abs(abs(s) - abs(c)) > 1e-6:
+            raise ValueError(
+                f"*_rows lines support only 0/90/45/-45 degrees, not {a}")
+        if ss == 0 and cc == 0:
+            raise ValueError(f"degenerate orientation {a}")
+        yy, xx = np.ogrid[:self.height, :self.width]
+        cx, cy = (self.width - 1) / 2.0, (self.height - 1) / 2.0
+        d = ss * xx + cc * yy                 # (H, W) int; sign matches proj
+        centre = ss * cx + cc * cy
+        return d, centre
+
+    def _lines_rows(self, offsets, widths, on, orientation):
+        offsets, widths = list(offsets), list(widths)
+        if len(offsets) != len(widths):
+            raise ValueError("offsets and widths must have the same length")
+        d, centre = self._row_index(orientation)
+        centre_row = int(round(centre))
+        mask = self._blank_mask()
+        for off, w in zip(offsets, widths):
+            w = int(w)
+            if w < 1:
+                continue
+            start = centre_row + int(round(off)) - (w - 1) // 2
+            mask |= (d >= start) & (d <= start + w - 1)   # exactly w rows
+        return self._render(mask, on)
+
+    def one_line_rows(self, offset=0, width=1, on: bool = True,
+                      orientation="vertical") -> Image.Image:
+        """One line sized/placed in MIRROR ROWS (exact). offset 0 = chip centre."""
+        return self._lines_rows([offset], [width], on, orientation)
+
+    def two_lines_rows(self, offsets, widths, on: bool = True,
+                       orientation="vertical") -> Image.Image:
+        if len(offsets) != 2 or len(widths) != 2:
+            raise ValueError("two_lines_rows expects 2 offsets and 2 widths")
+        return self._lines_rows(offsets, widths, on, orientation)
+
+    def three_lines_rows(self, offsets, widths, on: bool = True,
+                         orientation="vertical") -> Image.Image:
+        if len(offsets) != 3 or len(widths) != 3:
+            raise ValueError("three_lines_rows expects 3 offsets and 3 widths")
+        return self._lines_rows(offsets, widths, on, orientation)
 
 
 class HBBrush(_PatternSet):

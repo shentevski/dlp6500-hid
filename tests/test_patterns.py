@@ -131,6 +131,46 @@ def test_offset_positions_relative_to_center():
         raise AssertionError("wrong offset count should raise ValueError")
 
 
+def test_row_indexed_lines_exact_count():
+    mw = patterns.MixWavelengths()
+
+    def rows(img, orient):                      # count distinct mirror rows
+        a = mw._resolve_angle(orient)
+        s, c = np.sin(np.deg2rad(a)), np.cos(np.deg2rad(a))
+        sg = lambda v: 0 if abs(v) < 1e-6 else (1 if v > 0 else -1)
+        ss, cc = sg(s), sg(c)
+        g = np.asarray(img)[:, :, 0]
+        ys, xs = np.where(g == 255)
+        return len(np.unique(ss * xs + cc * ys))
+
+    # exactly `width` rows at every offset, for the 4 supported orientations
+    for orient in ("vertical", "horizontal", "45", "-45"):
+        for w in (1, 3, 7):
+            for off in (-25, 0, 17):
+                img = mw.one_line_rows(offset=off, width=w, orientation=orient)
+                _gray(img)                      # binary + native size
+                assert rows(img, orient) == w, (orient, w, off, rows(img, orient))
+
+    # orientations without a well-defined lattice row are rejected
+    for bad_orient in (30, 12.5):
+        try:
+            mw.one_line_rows(orientation=bad_orient)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{bad_orient} should raise")
+
+    # wrong offset/width counts raise
+    for bad in (lambda: mw.two_lines_rows([1], [1]),
+                lambda: mw.three_lines_rows([1, 2], [1, 2])):
+        try:
+            bad()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("wrong count should raise")
+
+
 def test_hbbrush_circle_and_ring():
     hb = patterns.HBBrush()
     c = _gray(hb.circle(center=(960, 540), radius=300, on=True))

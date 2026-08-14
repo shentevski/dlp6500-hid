@@ -293,6 +293,36 @@ depending on mount handedness) to get lab-horizontal stripes. For angled lines,
 the stripe up/down" knob: `offset=0` is the line through the chip center, and
 ± moves it perpendicular to itself.
 
+### Diagonals quantize: "distance" vs "mirror row"
+
+The projection method (`one_line`, `two_lines`, `three_lines`) sizes a line by
+**perpendicular distance in pixels** — natural, and exact for horizontal/vertical
+where the mirror lattice spacing along the normal is exactly 1 px. **But at ±45°
+the diagonal lattice spacing is `1/√2 ≈ 0.707 px`**, so a band of "width `w`"
+holds `√2·w` mirror rows — never a whole number. The real row count therefore
+**flips between `floor` and `ceil` as you sweep `offset`** (a width-1 diagonal
+holds 1 *or* 2 rows depending on position — a 2× swing in delivered light), and
+`width=3` and `width=4` can give the *same* number of rows. This is a genuine
+metrology gotcha, not a rounding nicety: it shows up as a square-wave artifact in
+a diagonal-line scan.
+
+The fix is to **index by mirror row** rather than by distance, using the fact
+that for the four axis/diagonal orientations a "row" *is* a straight lattice
+line: `d = y` (horizontal), `d = x` (vertical), `d = x+y` (+45), `d = y−x` (−45).
+The `*_rows` methods (`one_line_rows`, `two_lines_rows`, `three_lines_rows`) take
+`width` and `offset` in **mirror rows** and deliver **exactly `width` rows at
+every offset**. They're restricted to those four orientations (elsewhere a "row"
+isn't well defined). One caveat: constant row *count* isn't constant *area* — a
+diagonal near a chip corner is shorter than one through the middle, so area
+tapers at the extremes of a long sweep (flat within ~±296 px on a 1920×1080
+chip). Use `one_line` when you think in pixels/distance; use `one_line_rows` when
+you need exact, reproducible mirror counts (e.g. a quantitative diagonal scan).
+
+*(This is also a nice lesson: a "pixel" is really a sample of an underlying
+integer lattice, and any geometry that isn't axis-aligned samples that lattice
+at an irrational spacing. Index by the lattice, not by continuous distance, when
+the count has to be exact.)*
+
 ### Polarity
 
 `on=True` draws a bright shape on a dark field; `on=False` inverts it (dark shape

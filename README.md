@@ -111,6 +111,12 @@ hb.ring(center=(960, 540), radius=300, width=40)
   *lab-horizontal* stripe is a **45° line in pixel space** (the mirror array is
   rotated 45°) — see the doc.
 - `on=True` draws a bright shape on a dark field; `on=False` inverts it.
+- **Exact mirror-row lines** — `one_line_rows` / `two_lines_rows` /
+  `three_lines_rows` size `width`/`offset` in **mirror rows** (not pixels) and
+  deliver *exactly* `width` rows at every offset. Use these for quantitative
+  **diagonal** scans: the pixel-distance methods hold `√2·width` rows at ±45°,
+  which isn't an integer, so their row count (and delivered area) flips as you
+  sweep. Restricted to 0/90/±45°. See [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md) §4.
 
 ## Fast multi-pattern switching
 
